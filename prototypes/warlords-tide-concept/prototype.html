@@ -1,0 +1,393 @@
+<!doctype html>
+<!-- PROTOTYPE - NOT FOR PRODUCTION -->
+<!-- Question: Voelt minion-sturen (counters kiezen) + de oplopende Bloedstreak actief en krachtig, of is het toekijken? -->
+<!-- Date: 2026-11-01 -->
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Warlord's Tide - prototype</title>
+<style>
+  html,body{margin:0;height:100%;background:#050309;overflow:hidden;touch-action:none;
+    -webkit-user-select:none;user-select:none;font-family:system-ui,sans-serif}
+  canvas{display:block;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)}
+</style>
+</head>
+<body>
+<canvas id="c" width="360" height="640"></canvas>
+<script>
+// PROTOTYPE - NOT FOR PRODUCTION
+// Question: Voelt minion-sturen (counters kiezen) + de oplopende Bloedstreak actief en krachtig, of is het toekijken?
+// Date: 2026-11-01
+// Alle waarden zijn hardcoded; dit is wegwerpcode.
+
+const W = 360, H = 640;
+const cv = document.getElementById('c'), g = cv.getContext('2d');
+const LANE_TOP = 96, BASE_Y = 500, LX0 = 48, LX1 = 312, DURATION = 180;
+const ESS_MAX = 10, ESS_REGEN = 1.5, CARD_COST = 2;
+const TIMESCALE = parseFloat(new URLSearchParams(location.search).get('speed') || '1');
+
+const MIN = {
+  sword:  { name: 'ZWAARD', hp: 40, dps: 11, speed: 42, range: 15, r: 8,  counters: 'brute',  col: '#a9afd6' },
+  bow:    { name: 'BOOG',   hp: 18, dps: 9,  speed: 36, range: 95, r: 6,  counters: 'flyer',  col: '#b497e6' },
+  shield: { name: 'SCHILD', hp: 70, dps: 7,  speed: 30, range: 15, r: 10, counters: 'swarm',  col: '#8394b0' },
+  golem:  { name: 'GOLEM',  hp: 240, dps: 30, speed: 28, range: 20, r: 17, counters: null,    col: '#d8d0c0' },
+};
+const ENM = {
+  brute: { hp: 160, dps: 26, speed: 20, range: 17, r: 13 },
+  flyer: { hp: 45, dps: 10, speed: 50, range: 14, r: 8  },
+  swarm: { hp: 16, dps: 6,  speed: 34, range: 12, r: 5  },
+};
+const CARDS = ['sword', 'bow', 'shield'];
+const CARD_RECT = i => ({ x: 12 + i * 116, y: 540, w: 104, h: 86 });
+
+let S;
+function reset() {
+  S = { t: 0, gold: 0, essence: 6, baseHp: 5, streak: 0, maxStreak: 0, kills: 0, picks: 0, goodPicks: 0,
+        t7: null, rain: 0, minions: [], enemies: [], parts: [], texts: [], shake: 0, flash: 0,
+        spawnT: 1, dragon: null, over: false, won: false, leaks: 0, cardFlash: [0, 0, 0], golems: 0, dragons: 0 };
+}
+reset();
+
+const rnd = (a, b) => a + Math.random() * (b - a);
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+// ---------- spawning ----------
+function spawnEnemy(type, x, y) {
+  const d = ENM[type];
+  S.enemies.push({ type, x, y, hp: d.hp, maxhp: d.hp, r: d.r });
+}
+function spawnWave() {
+  const k = S.t / DURATION;
+  const roll = Math.random();
+  const type = roll < 0.34 ? 'brute' : roll < 0.67 ? 'flyer' : 'swarm';
+  const x = rnd(LX0 + 20, LX1 - 20);
+  if (type === 'swarm') for (let i = 0; i < 4; i++) spawnEnemy('swarm', x + rnd(-24, 24), LANE_TOP + rnd(-10, 10));
+  else spawnEnemy(type, x, LANE_TOP);
+  S.spawnT = 1.5 - 0.6 * k + rnd(0, 0.3);
+}
+function spawnMinion(type, x, y) {
+  const d = MIN[type];
+  S.minions.push({ type, x, y, hp: d.hp, maxhp: d.hp, r: d.r, age: 0, shoot: null, shootT: 0 });
+}
+
+// ---------- effects ----------
+function burst(x, y, col, n, spd, life, size, grav) {
+  for (let i = 0; i < n; i++) {
+    const a = rnd(0, Math.PI * 2), s = rnd(spd * 0.3, spd);
+    S.parts.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: rnd(life * 0.6, life), max: life, col, size: rnd(size * 0.6, size), grav: grav || 0 });
+  }
+}
+function text(x, y, txt, col, size) { S.texts.push({ x, y, txt, col, size: size || 14, life: 1.2 }); }
+function shake(v) { S.shake = Math.max(S.shake, v); }
+
+// ---------- streak ----------
+function onKill(e) {
+  S.kills++;
+  S.streak++;
+  S.maxStreak = Math.max(S.maxStreak, S.streak);
+  const mult = S.rain > 0 ? 2 : 1;
+  S.gold += 10 * mult;
+  burst(e.x, e.y, '#ffd24a', 5 + 3 * mult, 120, 0.7, 3, 260);
+  burst(e.x, e.y, '#7dff8a', 4, 70, 0.4, 2, 0);
+  shake(2 + Math.min(S.streak, 15) * 0.25);
+  if (S.streak === 3) {
+    S.rain = 8; text(180, 300, 'GOUDREGEN x2', '#ffd24a', 24); shake(8); S.flash = 0.25;
+  }
+  if (S.streak === 7) {
+    if (S.t7 === null) S.t7 = S.t;
+    spawnMinion('golem', rnd(120, 240), BASE_Y - 60); S.golems++;
+    text(180, 260, 'BOTGOLEM!', '#e8e0d0', 30); shake(14); S.flash = 0.4;
+    burst(180, BASE_Y - 60, '#e8e0d0', 40, 220, 0.9, 4, 200);
+  }
+  if (S.streak === 15) {
+    S.dragon = { y: BASE_Y + 30 }; S.dragons++;
+    text(180, 240, 'SCHADUWDRAAK!!', '#c06bff', 32); shake(22); S.flash = 0.6;
+  }
+}
+
+// ---------- update ----------
+function nearest(list, from, maxD) {
+  let best = null, bd = maxD === undefined ? 1e9 : maxD;
+  for (const o of list) { const d = dist(from, o); if (d < bd) { bd = d; best = o; } }
+  return best;
+}
+function moveToward(a, t, speed, dt) {
+  const dx = t.x - a.x, dy = t.y - a.y, d = Math.hypot(dx, dy) || 1;
+  a.x += dx / d * speed * dt; a.y += dy / d * speed * dt;
+}
+function update(dt) {
+  S.shake *= Math.pow(0.02, dt); S.flash = Math.max(0, S.flash - dt);
+  for (let i = 0; i < 3; i++) S.cardFlash[i] = Math.max(0, S.cardFlash[i] - dt);
+  if (S.over) return;
+  S.t += dt;
+  S.essence = Math.min(ESS_MAX, S.essence + ESS_REGEN * dt);
+  if (S.rain > 0) {
+    S.rain -= dt;
+    if (Math.random() < 0.7) S.parts.push({ x: rnd(0, W), y: -4, vx: 0, vy: rnd(120, 220), life: 2.6, max: 2.6, col: '#ffd24a', size: rnd(2, 4), grav: 0 });
+  }
+  S.spawnT -= dt; if (S.spawnT <= 0) spawnWave();
+
+  // minions
+  for (const m of S.minions) {
+    const d = MIN[m.type];
+    m.age += dt; m.shootT -= dt;
+    if (m.type === 'golem' && m.age > 12) m.hp = 0;
+    const tgt = nearest(S.enemies, m);
+    if (tgt && dist(m, tgt) <= d.range + tgt.r) {
+      const mult = d.counters ? (tgt.type === d.counters ? 2.5 : 0.1) : 1;
+      tgt.hp -= d.dps * mult * dt;
+      if (m.type === 'bow') { m.shoot = tgt; m.shootT = 0.08; }
+      if (Math.random() < dt * 8) burst(tgt.x, tgt.y, mult > 1 ? '#fff6c0' : '#8a8a9a', mult > 1 ? 4 : 1, 70, 0.3, 2, 0);
+      if (m.type === 'golem' && Math.random() < dt * 4) shake(5);
+    } else if (tgt) moveToward(m, tgt, d.speed, dt);
+    else m.y -= d.speed * dt;
+  }
+  // enemies
+  for (const e of S.enemies) {
+    const d = ENM[e.type];
+    const tgt = nearest(S.minions, e, 90);
+    if (tgt && dist(e, tgt) <= d.range + tgt.r) tgt.hp -= d.dps * dt;
+    else if (tgt) moveToward(e, tgt, d.speed, dt);
+    else e.y += d.speed * dt;
+  }
+  // dragon
+  if (S.dragon) {
+    S.dragon.y -= 760 * dt;
+    for (const e of S.enemies) if (e.hp > 0 && e.y >= S.dragon.y) e.hp = 0;
+    burst(rnd(LX0, LX1), S.dragon.y, '#c06bff', 3, 120, 0.5, 4, 0);
+    if (S.dragon.y < LANE_TOP - 30) S.dragon = null;
+  }
+  // resolve enemies
+  for (const e of S.enemies) {
+    if (e.hp <= 0) { onKill(e); e.dead = true; }
+    else if (e.y >= BASE_Y) {
+      e.dead = true; S.baseHp--; S.leaks++;
+      if (S.streak >= 3) text(e.x, BASE_Y - 20, 'STREAK VERLOREN', '#ff5470', 16);
+      S.streak = 0; S.rain = Math.min(S.rain, 0); shake(12); S.flash = 0.2;
+      burst(e.x, BASE_Y, '#ff5470', 18, 160, 0.6, 3, 0);
+      if (S.baseHp <= 0) { S.over = true; S.won = false; }
+    }
+  }
+  S.enemies = S.enemies.filter(e => !e.dead);
+  for (const m of S.minions) if (m.hp <= 0) burst(m.x, m.y, m.type === 'golem' ? '#e8e0d0' : '#8f7fc0', 10, 110, 0.5, 3, 0);
+  S.minions = S.minions.filter(m => m.hp > 0 && m.y > LANE_TOP - 6);
+  if (!S.over && S.t >= DURATION) { S.over = true; S.won = true; }
+
+  for (const p of S.parts) { p.life -= dt; p.vy += p.grav * dt; p.x += p.vx * dt; p.y += p.vy * dt; }
+  S.parts = S.parts.filter(p => p.life > 0);
+  for (const t of S.texts) { t.life -= dt; t.y -= 24 * dt; }
+  S.texts = S.texts.filter(t => t.life > 0);
+}
+
+// ---------- input ----------
+function tapCard(i) {
+  if (S.over) return;
+  const type = CARDS[i];
+  if (S.essence < CARD_COST) { S.cardFlash[i] = 0.15; return; }
+  S.essence -= CARD_COST;
+  // meting: was dit de counter van de vijand die het dichtst bij je burcht is?
+  let front = null;
+  for (const e of S.enemies) if (!front || e.y > front.y) front = e;
+  if (front) { S.picks++; if (MIN[type].counters === front.type) S.goodPicks++; }
+  const x = rnd(LX0 + 30, LX1 - 30);
+  spawnMinion(type, x - 8, BASE_Y - 8); spawnMinion(type, x + 8, BASE_Y - 8);
+  burst(x, BASE_Y - 8, MIN[type].col, 8, 90, 0.4, 2, 0);
+}
+function pt(ev) {
+  const r = cv.getBoundingClientRect();
+  return { x: (ev.clientX - r.left) / r.width * W, y: (ev.clientY - r.top) / r.height * H };
+}
+cv.addEventListener('pointerdown', ev => {
+  ev.preventDefault();
+  const p = pt(ev);
+  if (S.over) { if (p.y > 470) reset(); return; }
+  for (let i = 0; i < 3; i++) {
+    const r = CARD_RECT(i);
+    if (p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h) tapCard(i);
+  }
+});
+addEventListener('keydown', ev => {
+  if (ev.key === '1') tapCard(0); if (ev.key === '2') tapCard(1); if (ev.key === '3') tapCard(2);
+  if (ev.key === 'r' || ev.key === 'R') reset();
+});
+
+// ---------- drawing ----------
+function icon(type, x, y, s, col) {
+  g.save(); g.strokeStyle = col; g.fillStyle = col; g.lineWidth = Math.max(1.5, s * 0.22); g.lineCap = 'round';
+  g.beginPath();
+  if (type === 'sword' || type === 'golem') {
+    g.moveTo(x, y + s); g.lineTo(x, y - s); g.moveTo(x - s * 0.55, y + s * 0.3); g.lineTo(x + s * 0.55, y + s * 0.3);
+  } else if (type === 'bow') {
+    g.arc(x - s * 0.35, y, s, -1.1, 1.1); g.moveTo(x - s * 0.35 + Math.cos(-1.1) * s, y + Math.sin(-1.1) * s);
+    g.lineTo(x - s * 0.35 + Math.cos(1.1) * s, y + Math.sin(1.1) * s); g.moveTo(x - s * 0.9, y); g.lineTo(x + s, y);
+  } else if (type === 'shield') {
+    g.moveTo(x - s * 0.8, y - s * 0.8); g.lineTo(x + s * 0.8, y - s * 0.8); g.lineTo(x + s * 0.8, y + s * 0.1);
+    g.lineTo(x, y + s); g.lineTo(x - s * 0.8, y + s * 0.1); g.closePath();
+  }
+  g.stroke(); g.restore();
+}
+function glow(col, blur) { g.shadowColor = col; g.shadowBlur = blur; }
+function noGlow() { g.shadowBlur = 0; }
+
+function drawEnemy(e) {
+  g.save(); glow('#44ff7a', 10);
+  g.fillStyle = '#1a0d26'; g.strokeStyle = '#44ff7a'; g.lineWidth = 2;
+  if (e.type === 'brute') {
+    g.beginPath(); g.arc(e.x, e.y, e.r, 0, 7); g.fill(); g.stroke();
+    g.beginPath(); g.moveTo(e.x - 10, e.y - 8); g.lineTo(e.x - 15, e.y - 18); g.lineTo(e.x - 5, e.y - 11);
+    g.moveTo(e.x + 10, e.y - 8); g.lineTo(e.x + 15, e.y - 18); g.lineTo(e.x + 5, e.y - 11); g.stroke();
+  } else if (e.type === 'flyer') {
+    g.beginPath(); g.moveTo(e.x, e.y + 9); g.lineTo(e.x - 13, e.y - 6); g.lineTo(e.x - 3, e.y - 2);
+    g.lineTo(e.x, e.y - 8); g.lineTo(e.x + 3, e.y - 2); g.lineTo(e.x + 13, e.y - 6); g.closePath(); g.fill(); g.stroke();
+  } else {
+    g.beginPath(); g.arc(e.x, e.y, e.r, 0, 7); g.fill(); g.stroke();
+  }
+  noGlow(); g.fillStyle = '#7dff8a';
+  g.fillRect(e.x - 4, e.y - 2, 2, 2); g.fillRect(e.x + 2, e.y - 2, 2, 2);
+  g.restore();
+  if (e.hp < e.maxhp) bar(e.x, e.y - e.r - 6, 20, e.hp / e.maxhp, '#44ff7a');
+}
+function drawMinion(m) {
+  const d = MIN[m.type];
+  g.save(); glow(d.col, 6);
+  g.fillStyle = '#17102a'; g.strokeStyle = d.col; g.lineWidth = 2;
+  g.beginPath(); g.arc(m.x, m.y, m.r, 0, 7); g.fill(); g.stroke(); noGlow();
+  icon(m.type, m.x, m.y, m.r * 0.62, d.col);
+  g.restore();
+  if (m.shoot && m.shootT > 0) {
+    g.strokeStyle = '#d6c8ff'; g.lineWidth = 1.5; g.beginPath(); g.moveTo(m.x, m.y); g.lineTo(m.shoot.x, m.shoot.y); g.stroke();
+  }
+  if (m.hp < m.maxhp) bar(m.x, m.y - m.r - 6, 20, m.hp / m.maxhp, d.col);
+}
+function bar(x, y, w, f, col) {
+  g.fillStyle = '#000a'; g.fillRect(x - w / 2, y, w, 3);
+  g.fillStyle = col; g.fillRect(x - w / 2, y, w * Math.max(0, f), 3);
+}
+function label(txt, x, y, size, col, align, weight) {
+  g.font = (weight || '700') + ' ' + size + 'px system-ui,sans-serif'; g.fillStyle = col; g.textAlign = align || 'left';
+  g.textBaseline = 'middle'; g.fillText(txt, x, y);
+}
+
+function draw() {
+  const sx = rnd(-1, 1) * S.shake, sy = rnd(-1, 1) * S.shake;
+  g.save(); g.clearRect(0, 0, W, H); g.translate(sx, sy);
+  // background: duister doek, intensiteit volgt de streak
+  const inten = Math.min(S.streak, 15) / 15;
+  let bg = g.createLinearGradient(0, 0, 0, H); bg.addColorStop(0, '#0b0614'); bg.addColorStop(1, '#14091f');
+  g.fillStyle = bg; g.fillRect(-20, -20, W + 40, H + 40);
+  // lane
+  g.fillStyle = '#0f0a1c'; g.fillRect(LX0 - 10, LANE_TOP - 10, LX1 - LX0 + 20, BASE_Y - LANE_TOP + 20);
+  g.strokeStyle = `rgba(255,210,74,${0.08 + inten * 0.5})`; g.lineWidth = 2;
+  g.strokeRect(LX0 - 10, LANE_TOP - 10, LX1 - LX0 + 20, BASE_Y - LANE_TOP + 20);
+  // vijandelijke poort
+  g.save(); glow('#44ff7a', 14); g.strokeStyle = '#44ff7a'; g.lineWidth = 3;
+  g.beginPath(); g.moveTo(LX0 - 10, LANE_TOP - 16); g.lineTo(LX1 + 10, LANE_TOP - 16); g.stroke(); g.restore();
+  label('VIJANDELIJKE POORT', 180, LANE_TOP - 30, 10, '#44ff7a99', 'center');
+  // jouw burcht
+  g.save(); glow('#9a7bff', 12); g.strokeStyle = '#9a7bff'; g.lineWidth = 3;
+  g.beginPath(); g.moveTo(LX0 - 10, BASE_Y + 10); g.lineTo(LX1 + 10, BASE_Y + 10); g.stroke(); g.restore();
+  // dragon flame
+  if (S.dragon) {
+    const gr = g.createLinearGradient(0, S.dragon.y - 50, 0, S.dragon.y + 60);
+    gr.addColorStop(0, '#c06bff00'); gr.addColorStop(0.5, '#c06bffcc'); gr.addColorStop(1, '#ffffff00');
+    g.fillStyle = gr; g.fillRect(LX0 - 10, S.dragon.y - 50, LX1 - LX0 + 20, 110);
+  }
+  for (const e of S.enemies) drawEnemy(e);
+  for (const m of S.minions) drawMinion(m);
+  for (const p of S.parts) {
+    g.globalAlpha = Math.max(0, p.life / p.max); g.fillStyle = p.col;
+    g.beginPath(); g.arc(p.x, p.y, p.size, 0, 7); g.fill();
+  }
+  g.globalAlpha = 1;
+  for (const t of S.texts) {
+    g.save(); g.globalAlpha = Math.min(1, t.life * 1.5); glow(t.col, 12);
+    label(t.txt, t.x, t.y, t.size, t.col, 'center', '900'); g.restore();
+  }
+  g.restore();
+
+  // flash
+  if (S.flash > 0) { g.fillStyle = `rgba(255,230,160,${S.flash * 0.5})`; g.fillRect(0, 0, W, H); }
+
+  // HUD
+  label(`GOUD ${S.gold}`, 12, 20, 16, '#ffd24a');
+  if (S.rain > 0) label(`x2 ${Math.ceil(S.rain)}s`, 12, 40, 12, '#ffd24a');
+  const left = Math.max(0, Math.ceil(DURATION - S.t));
+  label(`${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`, W - 12, 20, 16, '#cfc4ee', 'right');
+  for (let i = 0; i < 5; i++) {
+    g.fillStyle = i < S.baseHp ? '#9a7bff' : '#2a2140'; g.beginPath(); g.arc(W - 20 - i * 16, 42, 5, 0, 7); g.fill();
+  }
+  // streak meter (links)
+  const mx = 10, my0 = 120, my1 = 470, mh = my1 - my0;
+  g.fillStyle = '#1b1230'; g.fillRect(mx, my0, 12, mh);
+  const f = Math.min(S.streak, 15) / 15;
+  const sg = g.createLinearGradient(0, my1, 0, my0); sg.addColorStop(0, '#ffd24a'); sg.addColorStop(1, '#c06bff');
+  g.save(); glow(inten > 0.1 ? '#ffd24a' : '#000', 6 + inten * 18); g.fillStyle = sg; g.fillRect(mx, my1 - mh * f, 12, mh * f); g.restore();
+  for (const [n, nm] of [[3, 'x2'], [7, 'GOLEM'], [15, 'DRAAK']]) {
+    const y = my1 - mh * n / 15; g.fillStyle = S.streak >= n ? '#ffd24a' : '#5c4d85'; g.fillRect(mx - 3, y - 1, 18, 2);
+    label(nm, mx + 20, y, 9, S.streak >= n ? '#ffd24a' : '#7a6aa8');
+  }
+  label(`${S.streak}`, mx + 6, my0 - 14, 20, S.streak ? '#ffd24a' : '#5c4d85', 'center', '900');
+  label('STREAK', mx + 6, my0 - 32, 8, '#7a6aa8', 'center');
+
+  // essence
+  g.fillStyle = '#1b1230'; g.fillRect(12, 522, 336, 10);
+  g.save(); glow('#9a7bff', 6); g.fillStyle = '#9a7bff'; g.fillRect(12, 522, 336 * S.essence / ESS_MAX, 10); g.restore();
+  label(`ESSENTIE ${S.essence.toFixed(1)}`, 180, 516, 9, '#cfc4ee', 'center');
+  // cards
+  for (let i = 0; i < 3; i++) {
+    const r = CARD_RECT(i), d = MIN[CARDS[i]], ok = S.essence >= CARD_COST;
+    g.fillStyle = S.cardFlash[i] > 0 ? '#3a1530' : '#150e26'; g.strokeStyle = ok ? d.col : '#3a2f58'; g.lineWidth = 2;
+    g.save(); if (ok) glow(d.col, 8);
+    g.beginPath(); g.roundRect(r.x, r.y, r.w, r.h, 10); g.fill(); g.stroke(); g.restore();
+    icon(CARDS[i], r.x + r.w / 2, r.y + 32, 16, ok ? d.col : '#4c4170');
+    label(d.name, r.x + r.w / 2, r.y + 62, 12, ok ? '#e6defa' : '#5c4d85', 'center');
+    label(`${CARD_COST} essentie`, r.x + r.w / 2, r.y + 77, 9, '#7a6aa8', 'center', '500');
+  }
+  label('Zwaard>Brute  Boog>Vlieger  Schild>Zwerm', 180, 634, 9, '#6a5a98', 'center', '500');
+
+  if (S.over) drawEnd();
+}
+
+function drawEnd() {
+  g.fillStyle = '#050309ee'; g.fillRect(0, 0, W, H);
+  label(S.won ? 'BURCHT STAAT NOG' : 'BURCHT GEVALLEN', 180, 70, 24, S.won ? '#ffd24a' : '#ff5470', 'center', '900');
+  const pct = S.picks ? Math.round(100 * S.goodPicks / S.picks) : 0;
+  const a = S.t7 !== null, b = pct >= 60;
+  const rows = [
+    ['Hoogste streak', `${S.maxStreak}`, null],
+    [`7-streak binnen ${DURATION}s`, a ? `ja (na ${S.t7.toFixed(0)}s)` : 'nee', a],
+    ['Goede counter-keuzes', `${S.goodPicks}/${S.picks} (${pct}%)`, b],
+    ['Kills', `${S.kills}`, null],
+    ['Botgolems / Draken', `${S.golems} / ${S.dragons}`, null],
+    ['Goud', `${S.gold}`, null],
+    ['Overleefd', `${S.t.toFixed(0)}s`, null],
+  ];
+  rows.forEach((r, i) => {
+    const y = 130 + i * 38;
+    label(r[0], 24, y, 14, '#cfc4ee', 'left', '500');
+    label(r[1], W - 24, y, 15, r[2] === null ? '#ffd24a' : r[2] ? '#7dff8a' : '#ff5470', 'right');
+  });
+  label('Signaal c (zelf invullen):', 180, 420, 13, '#cfc4ee', 'center', '500');
+  label('Wilde je meteen nog een slag?', 180, 442, 15, '#ffd24a', 'center');
+  g.save(); glow('#ffd24a', 12); g.strokeStyle = '#ffd24a'; g.lineWidth = 2;
+  g.beginPath(); g.roundRect(60, 490, 240, 56, 12); g.stroke(); g.restore();
+  label('NOG EEN SLAG', 180, 518, 18, '#ffd24a', 'center', '900');
+}
+
+// ---------- loop ----------
+function fit() {
+  const s = Math.min(innerWidth / W, innerHeight / H);
+  cv.style.width = W * s + 'px'; cv.style.height = H * s + 'px';
+}
+addEventListener('resize', fit); fit();
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000) * TIMESCALE; last = now;
+  update(dt); draw(); requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+window.__p = { S: () => S, tap: tapCard, reset, step: dt => update(dt), draw };
+</script>
+</body>
+</html>
